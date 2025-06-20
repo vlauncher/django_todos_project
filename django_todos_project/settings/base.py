@@ -49,13 +49,15 @@ LOCAL_APPS = [
 THIRD_PARTY_APPS = [
     "rest_framework",
     "drf_yasg",
-    "djoser"  
+    "djoser",
+    "corsheaders"  
 ]
 
 INSTALLED_APPS += LOCAL_APPS + THIRD_PARTY_APPS
 
 MIDDLEWARE = [
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -186,3 +188,6 @@ CELERY_TIMEZONE = 'UTC'
 CELERY_IMPORTS = ('todos.tasks',)
 
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
+
+
+CORS_ALLOW_ALL_ORIGINS = True
