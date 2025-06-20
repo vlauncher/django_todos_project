@@ -5,6 +5,7 @@ from .models import Todo
 from .serializers import TodoSerializer
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
+from django.db import IntegrityError
 
 class TodoViewSet(viewsets.ModelViewSet):
     queryset = Todo.objects.all()
@@ -12,10 +13,13 @@ class TodoViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        try:
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        except IntegrityError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
