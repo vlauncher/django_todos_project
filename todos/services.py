@@ -1,100 +1,101 @@
-# services.py
 from django.db import transaction
-from .models import Todo
 from django.core.cache import cache
+from .models import Todo
 from .tasks import send_archive_notification_email
 
-class TodoService:
-    CACHE_TIMEOUT = 60 * 60  # 1 hour
+def get_todo_cache_key(todo_id, user_id):
+    """Generate a cache key for a specific todo."""
+    return f"todo_{user_id}_{todo_id}"
 
-    @staticmethod
-    @transaction.atomic
-    def create_todo(validated_data):
-        """Create a new todo with transaction"""
-        todo = Todo.objects.create(**validated_data)
-        # Invalidate cache
-        cache.delete(f'todo_list_{todo.user.id}')
-        return todo
+def get_user_todos_cache_key(user_id):
+    """Generate a cache key for a user's todo list."""
+    return f"user_todos_{user_id}"
 
-    @staticmethod
-    @transaction.atomic
-    def update_todo(instance, validated_data):
-        """Update todo with transaction"""
-        was_archived = instance.archived
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.save()
-        
-        # Trigger email if newly archived
-        if not was_archived and instance.archived:
-            send_archive_notification_email.delay(
-                instance.user.email,
-                instance.title
-            )
-        
-        # Invalidate cache
-        cache.delete(f'todo_{instance.id}')
-        cache.delete(f'todo_list_{instance.user.id}')
-        return instance
+@transaction.atomic
+def create_todo(user, data):
+    """Create a new todo with atomic transaction."""
+    todo = Todo.objects.create(
+        user=user,
+        title=data.get('title'),
+        description=data.get('description', ''),
+        archived=False,
+        completed=False
+    )
+    # Invalidate user todos cache
+    cache.delete(get_user_todos_cache_key(user.id))
+    return todo
 
-    @staticmethod
-    @transaction.atomic
-    def delete_todo(instance):
-        """Delete todo with transaction"""
-        user_id = instance.user.id
-        todo_id = instance.id
-        instance.delete()
-        # Invalidate cache
-        cache.delete(f'todo_{todo_id}')
-        cache.delete(f'todo_list_{user_id}')
+@transaction.atomic
+def update_todo(todo, data, partial=False):
+    """Update an existing todo with atomic transaction."""
+    if partial:
+        for field, value in data.items():
+            setattr(todo, field, value)
+    else:
+        todo.title = data.get('title', todo.title)
+        todo.description = data.get('description', todo.description)
+        todo.archived = data.get('archived', todo.archived)
+        todo.completed = data.get('completed', todo.completed)
+    todo.save()
+    # Update cache for this todo
+    cache.set(get_todo_cache_key(todo.id, todo.user.id), todo, timeout=3600)
+    # Invalidate user todos cache
+    cache.delete(get_user_todos_cache_key(todo.user.id))
+    return todo
 
-    @staticmethod
-    @transaction.atomic
-    def toggle_complete(instance):
-        """Toggle completion status with transaction"""
-        instance.completed = not instance.completed
-        instance.save()
-        # Invalidate cache
-        cache.delete(f'todo_{instance.id}')
-        cache.delete(f'todo_list_{instance.user.id}')
-        return instance
+@transaction.atomic
+def toggle_todo_archive(todo):
+    """Toggle the archive status of a todo."""
+    todo.archived = not todo.archived
+    todo.save()
+    if todo.archived:
+        # Trigger async email notification
+        send_archive_notification_email.delay(todo.user.email, todo.title)
+    # Update cache for this todo
+    cache.set(get_todo_cache_key(todo.id, todo.user.id), todo, timeout=3600)
+    # Invalidate user todos cache
+    cache.delete(get_user_todos_cache_key(todo.user.id))
+    return todo
 
-    @staticmethod
-    @transaction.atomic
-    def toggle_archive(instance):
-        """Toggle archive status with transaction"""
-        was_archived = instance.archived
-        instance.archived = not instance.archived
-        instance.save()
-        
-        # Trigger email if newly archived
-        if not was_archived and instance.archived:
-            send_archive_notification_email.delay(
-                instance.user.email,
-                instance.title
-            )
-        
-        # Invalidate cache
-        cache.delete(f'todo_{instance.id}')
-        cache.delete(f'todo_list_{instance.user.id}')
-        return instance
+@transaction.atomic
+def toggle_todo_complete(todo):
+    """Toggle the completion status of a todo."""
+    todo.completed = not todo.completed
+    todo.save()
+    # Update cache for this todo
+    cache.set(get_todo_cache_key(todo.id, todo.user.id), todo, timeout=3600)
+    # Invalidate user todos cache
+    cache.delete(get_user_todos_cache_key(todo.user.id))
+    return todo
 
-    @staticmethod
-    def get_cached_todo(todo_id):
-        """Get todo from cache or database"""
-        cache_key = f'todo_{todo_id}'
-        todo = cache.get(cache_key)
-        if not todo:
-            todo = Todo.objects.get(id=todo_id)
-            cache.set(cache_key, todo, TodoService.CACHE_TIMEOUT)
-        return todo
+@transaction.atomic
+def delete_todo(todo):
+    """Delete a todo with atomic transaction."""
+    user_id = todo.user.id
+    todo_id = todo.id
+    todo.delete()
+    # Delete todo cache
+    cache.delete(get_todo_cache_key(todo_id, user_id))
+    # Invalidate user todos cache
+    cache.delete(get_user_todos_cache_key(user_id))
 
-    @staticmethod
-    def get_cached_todo_list(user_id):
-        """Get todo list from cache or database"""
-        cache_key = f'todo_list_{user_id}'
-        todos = cache.get(cache_key)
-        if not todos:
-            todos = Todo.objects.filter(user_id=user_id)
-            cache.set(cache_key, todos, TodoService.CACHE_TIMEOUT)
-        return todos
+def get_todo_by_id(todo_id, user_id):
+    """Retrieve a todo by ID, using cache if available."""
+    cache_key = get_todo_cache_key(todo_id, user_id)
+    todo = cache.get(cache_key)
+    if not todo:
+        try:
+            todo = Todo.objects.get(id=todo_id, user_id=user_id)
+            cache.set(cache_key, todo, timeout=3600)
+        except Todo.DoesNotExist:
+            return None
+    return todo
+
+def get_user_todos(user_id):
+    """Retrieve all todos for a user, using cache if available."""
+    cache_key = get_user_todos_cache_key(user_id)
+    todos = cache.get(cache_key)
+    if not todos:
+        todos = Todo.objects.filter(user_id=user_id)
+        cache.set(cache_key, todos, timeout=3600)
+    return todos
